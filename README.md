@@ -12,7 +12,6 @@ A lightweight Node.js reverse proxy server that routes API requests through a SO
 - 🔄 **CORS Enabled**: No cross-origin issues.
 - 🐳 **Docker Ready**: Easy deployment with Docker.
 - 📜 **Request Logging**: Monitor all proxied requests.
-- 🧪 **Health Checks**: Built-in monitoring.
 - ❗ **Error Handling**: Robust error management.
 
 ---
@@ -97,12 +96,12 @@ curl http://127.0.0.1:42000/YOUR_API_KEY/api.github.com/user \
 
 ## 🔧 Configuration
 
-| Variable          | Default                    | Description                                      |
-|------------------|----------------------------|--------------------------------------------------|
-| `PORT`           | `42000`                    | Server port                                      |
-| `SOCKS_PROXY`    | `socks5://127.0.0.1:18086` | SOCKS5 proxy URL                                 |
-| `EXPECTED_API_KEY` | _(none)_                | 🔐 Required: Your API key for authentication     |
-| `NODE_ENV`       | `development`              | Environment mode                                 |
+| Variable           | Default                    | Description                                  |
+| ------------------ | -------------------------- | -------------------------------------------- |
+| `PORT`             | `42000`                    | Server port                                  |
+| `SOCKS_PROXY`      | `socks5://127.0.0.1:18086` | SOCKS5 proxy URL                             |
+| `EXPECTED_API_KEY` | _(none)_                   | 🔐 Required: Your API key for authentication |
+| `NODE_ENV`         | `development`              | Environment mode                             |
 
 Edit `server.js` to change default SOCKS5 proxy, or use:
 
@@ -164,14 +163,6 @@ response = requests.post(
 ```
 
 ---
-
-## 📊 Monitoring
-
-### Health Check
-
-```bash
-curl http://127.0.0.1:42000/
-```
 
 ### Logs
 

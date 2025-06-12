@@ -52,12 +52,6 @@ USER proxyuser
 # Expose the port the application will listen on.
 EXPOSE 42000
 
-# Health check to verify the application is running and responsive.
-# This uses Node.js's built-in http module for the check, making it self-contained.
-# The .on('error', ...) ensures that connection errors also cause the health check to fail.
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:42000/', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1));"
-
 # Command to run the application when the container starts.
 # Running 'node server.js' directly is often more efficient than 'npm start'
 # as it bypasses the npm script runner overhead.
