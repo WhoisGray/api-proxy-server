@@ -157,7 +157,7 @@ app.get("/", (req, res) => {
 });
 
 // Start server
-app.listen(PORT, "127.0.0.1", () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Reverse Proxy Server running on http://127.0.0.1:${PORT}`);
   console.log(`📡 Using SOCKS5 proxy: ${socksProxy}`);
   console.log("\n📋 Usage Examples (remember to replace YOUR_API_KEY):");
