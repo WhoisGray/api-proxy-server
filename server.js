@@ -3,6 +3,7 @@ const { createProxyMiddleware } = require("http-proxy-middleware");
 const { SocksProxyAgent } = require("socks-proxy-agent");
 const dotenv = require("dotenv");
 
+// Load environment variables from .env file
 dotenv.config();
 
 const app = express();
@@ -11,6 +12,10 @@ const PORT = process.env.PORT || 42000;
 // SOCKS5 proxy configuration
 const socksProxy = process.env.SOCKS_PROXY || "socks5://127.0.0.1:18086";
 const agent = new SocksProxyAgent(socksProxy);
+
+// --- IMPORTANT: Set your secret API key in your .env file ---
+// For example: EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY_HERE
+const EXPECTED_API_KEY = process.env.EXPECTED_API_KEY;
 
 // Middleware to log requests
 app.use((req, res, next) => {
@@ -32,29 +37,36 @@ app.use((req, res, next) => {
   next();
 });
 
-// Generic proxy middleware
-const createProxy = (target) => {
+/**
+ * Creates a proxy middleware for a given target domain.
+ * @param {string} target The target domain (e.g., "api.openai.com").
+ * @param {string} apiPathSegment The API key segment to remove from the path.
+ * @returns {Function} The proxy middleware.
+ */
+const createProxy = (target, apiPathSegment) => {
   return createProxyMiddleware({
     target: `https://${target}`,
     changeOrigin: true,
     secure: true,
     followRedirects: true,
-    logLevel: "warn", // Reduce logging noise
+    logLevel: "warn", // Reduce logging noise for production
 
     // Use SOCKS5 proxy
     agent: agent,
 
-    // Remove the target domain from the path
+    // Remove both the API key and target domain from the beginning of the path
     pathRewrite: (path, req) => {
-      // Remove the target domain from the beginning of the path
-      const targetDomain = req.url.split("/")[1];
-      return path.replace(`/${targetDomain}`, "");
+      // The original path will be like /<apiKey>/<targetDomain>/<actualPath>
+      // We need to remove /<apiKey>/<targetDomain>
+      const newPath = path.replace(`/${apiPathSegment}/${target}`, "");
+      console.log(`Rewriting path from "${path}" to "${newPath}"`);
+      return newPath;
     },
 
     // Handle headers
     onProxyReq: (proxyReq, req, res) => {
       try {
-        // ignore if favicon.ico
+        // Ignore if favicon.ico request
         if (req.url.includes("favicon.ico")) {
           return;
         }
@@ -71,9 +83,9 @@ const createProxy = (target) => {
         }
 
         // Log the actual request being made
-        console.log(
-          `Proxying to: https://${req.url.split("/")[1]}${proxyReq.path}`
-        );
+        // req.url here will still contain the API key and target domain initially
+        const fullProxyTarget = `https://${target}${proxyReq.path}`;
+        console.log(`Proxying request to: ${fullProxyTarget}`);
       } catch (error) {
         console.error("Error in onProxyReq:", error.message);
       }
@@ -81,9 +93,10 @@ const createProxy = (target) => {
 
     // Handle response
     onProxyRes: (proxyRes, req, res) => {
-      // Headers are already set by CORS middleware
       console.log(
-        `✅ Response: ${proxyRes.statusCode} from ${req.url.split("/")[1]}`
+        `✅ Response: ${proxyRes.statusCode} from ${
+          req.url.split("/")[2] // Index 2 because path is now /apiKey/targetDomain/path
+        }`
       );
     },
 
@@ -98,57 +111,70 @@ const createProxy = (target) => {
   });
 };
 
-// Dynamic proxy route
-app.use("/:target(*)", (req, res, next) => {
-  const fullPath = req.params.target;
-  const targetDomain = fullPath.split("/")[0];
+// Dynamic proxy route with API key validation
+app.use("/:apiKeyParam/:target(*)", (req, res, next) => {
+  const apiKeyParam = req.params.apiKeyParam; // The API key from the URL
+  const fullPath = req.params.target; // The rest of the path, e.g., api.openai.com/v1/...
+  const targetDomain = fullPath.split("/")[0]; // Extract target domain from the rest of the path
 
-  // Validate domain
-  if (!targetDomain || !targetDomain.includes(".")) {
-    return res.status(400).json({
-      error: "Invalid target domain",
-      usage: "Use format: /domain.com/path",
+  // --- API Key Validation ---
+  if (!EXPECTED_API_KEY || apiKeyParam !== EXPECTED_API_KEY) {
+    console.warn(`Unauthorized access attempt with key: ${apiKeyParam}`);
+    return res.status(401).json({
+      error: "Unauthorized",
+      message: "Invalid or missing API key in the path.",
+      usage: "Use format: /YOUR_API_KEY/domain.com/path",
     });
   }
 
-  // Create proxy for this specific target
-  const proxy = createProxy(targetDomain);
+  // Validate target domain
+  if (!targetDomain || !targetDomain.includes(".")) {
+    return res.status(400).json({
+      error: "Invalid target domain",
+      usage: "Use format: /YOUR_API_KEY/domain.com/path",
+    });
+  }
+
+  // Create proxy for this specific target and API key
+  const proxy = createProxy(targetDomain, apiKeyParam);
   proxy(req, res, next);
 });
 
-// Health check endpoint
+// Health check endpoint (accessible without API key)
 app.get("/", (req, res) => {
   res.json({
     status: "Reverse Proxy Server Running",
     port: PORT,
     usage: [
-      "OpenAI: http://127.0.0.1:42000/api.openai.com/v1/chat/completions",
-      "Google AI: http://127.0.0.1:42000/generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent",
+      "Secured API Usage:",
+      `http://127.0.0.1:${PORT}/YOUR_API_KEY/api.openai.com/v1/chat/completions`,
+      `http://127.0.0.1:${PORT}/YOUR_API_KEY/generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent`,
     ],
     proxy: socksProxy,
+    // Warning: Do not expose your actual EXPECTED_API_KEY in production health checks
+    apiKeyHint: "Remember to replace 'YOUR_API_KEY' with your actual key.",
   });
 });
-
-// Handle CORS preflight requests (this is now handled by middleware above)
-// app.options('*', (req, res) => {
-//   res.header('Access-Control-Allow-Origin', '*');
-//   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-//   res.header('Access-Control-Allow-Headers', '*');
-//   res.sendStatus(200);
-// });
 
 // Start server
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`🚀 Reverse Proxy Server running on http://127.0.0.1:${PORT}`);
   console.log(`📡 Using SOCKS5 proxy: ${socksProxy}`);
-  console.log("\n📋 Usage Examples:");
+  console.log("\n📋 Usage Examples (remember to replace YOUR_API_KEY):");
   console.log(
-    `   OpenAI: http://127.0.0.1:${PORT}/api.openai.com/v1/chat/completions`
+    `   OpenAI: http://127.0.0.1:${PORT}/YOUR_API_KEY/api.openai.com/v1/chat/completions`
   );
   console.log(
-    `   Google: http://127.0.0.1:${PORT}/generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent`
+    `   Google: http://127.0.0.1:${PORT}/YOUR_API_KEY/generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent`
   );
-  console.log("\n✅ Ready to proxy requests!");
+  if (!EXPECTED_API_KEY) {
+    console.warn(
+      "\n⚠️ WARNING: EXPECTED_API_KEY is not set in your .env file!"
+    );
+    console.warn("   The server will not be secured. Please set it.");
+  } else {
+    console.log("\n✅ Proxy server is ready and secured with API key!");
+  }
 });
 
 // Graceful shutdown
