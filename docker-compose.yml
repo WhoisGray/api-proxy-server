@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   reverse-proxy:
@@ -9,15 +9,25 @@ services:
       - NODE_ENV=production
       - PROXY_PORT=42000
       - SOCKS_PROXY=socks5://host.docker.internal:18086
+      # IMPORTANT: Pass your secret API key to the container
+      # Replace 'YOUR_SUPER_SECRET_KEY_HERE' with your actual key.
+      - EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY_HERE
     networks:
       - proxy-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:42000/"]
+      # Using the same Node.js-based health check as in the Dockerfile for consistency
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:42000/', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1));",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 40s # Give the app enough time to start
 
 networks:
   proxy-network:
