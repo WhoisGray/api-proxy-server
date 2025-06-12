@@ -35,20 +35,6 @@ COPY --from=builder /app/node_modules ./node_modules/
 # Copy the rest of the application source code into the container.
 COPY . .
 
-# Security Best Practice: Create a non-root user and set appropriate permissions.
-# This reduces the attack surface of the container.
-# 'addgroup -g 1001 -S nodejs': Creates a 'nodejs' group with GID 1001.
-# 'adduser -S proxyuser -u 1001 -G nodejs': Creates a 'proxyuser' with UID 1001,
-#                                         and adds them to the 'nodejs' group.
-# 'chown -R proxyuser:nodejs /app': Changes ownership of the application directory
-#                                 to the 'proxyuser' and 'nodejs' group.
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S proxyuser -u 1001 -G nodejs && \
-    chown -R proxyuser:nodejs /app
-
-# Switch to the non-root user for running the application.
-USER proxyuser
-
 # Expose the port the application will listen on.
 EXPOSE 42000
 
