@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  reverse-proxy:
+    build: .
+    ports:
+      - "42000:42000"
+    environment:
+      - NODE_ENV=production
+      - PROXY_PORT=42000
+      - SOCKS_PROXY=socks5://host.docker.internal:18086
+    networks:
+      - proxy-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:42000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  proxy-network:
+    driver: bridge
