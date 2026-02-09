@@ -96,12 +96,12 @@ curl http://127.0.0.1:42000/YOUR_API_KEY/api.github.com/user \
 
 ## 🔧 Configuration
 
-| Variable           | Default                    | Description                                  |
-| ------------------ | -------------------------- | -------------------------------------------- |
-| `PORT`             | `42000`                    | Server port                                  |
-| `SOCKS_PROXY`      | `socks5://127.0.0.1:18086` | SOCKS5 proxy URL                             |
-| `EXPECTED_API_KEY` | _(none)_                   | 🔐 Required: Your API key for authentication |
-| `NODE_ENV`         | `development`              | Environment mode                             |
+| Variable           | Default       | Description                                  |
+| ------------------ | ------------- | -------------------------------------------- |
+| `PORT`             | `42000`       | Server port                                  |
+| `SOCKS_PROXY`      | _(none)_      | SOCKS5 proxy URL                             |
+| `EXPECTED_API_KEY` | _(none)_      | 🔐 Required: Your API key for authentication |
+| `NODE_ENV`         | `development` | Environment mode                             |
 
 Edit `server.js` to change default SOCKS5 proxy, or use:
 

@@ -10,8 +10,8 @@ const app = express();
 const PORT = process.env.PORT || 42000;
 
 // SOCKS5 proxy configuration
-const socksProxy = process.env.SOCKS_PROXY || "socks5://127.0.0.1:18086";
-const agent = new SocksProxyAgent(socksProxy);
+const socksProxy = process.env.SOCKS_PROXY || "";
+const agent = socksProxy ? new SocksProxyAgent(socksProxy) : null;
 
 // --- IMPORTANT: Set your secret API key in your .env file ---
 // For example: EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY_HERE
@@ -52,7 +52,7 @@ const createProxy = (target, apiPathSegment) => {
     logLevel: "warn", // Reduce logging noise for production
 
     // Use SOCKS5 proxy
-    agent: agent,
+    agent: agent ? agent : undefined,
 
     // Remove both the API key and target domain from the beginning of the path
     pathRewrite: (path, req) => {
@@ -77,7 +77,7 @@ const createProxy = (target, apiPathSegment) => {
           if (!proxyReq.getHeader("User-Agent")) {
             proxyReq.setHeader(
               "User-Agent",
-              req.headers["user-agent"] || "Mozilla/5.0"
+              req.headers["user-agent"] || "Mozilla/5.0",
             );
           }
         }
@@ -96,7 +96,7 @@ const createProxy = (target, apiPathSegment) => {
       console.log(
         `✅ Response: ${proxyRes.statusCode} from ${
           req.url.split("/")[2] // Index 2 because path is now /apiKey/targetDomain/path
-        }`
+        }`,
       );
     },
 
@@ -162,14 +162,14 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`📡 Using SOCKS5 proxy: ${socksProxy}`);
   console.log("\n📋 Usage Examples (remember to replace YOUR_API_KEY):");
   console.log(
-    `   OpenAI: http://127.0.0.1:${PORT}/YOUR_API_KEY/api.openai.com/v1/chat/completions`
+    `   OpenAI: http://127.0.0.1:${PORT}/YOUR_API_KEY/api.openai.com/v1/chat/completions`,
   );
   console.log(
-    `   Google: http://127.0.0.1:${PORT}/YOUR_API_KEY/generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent`
+    `   Google: http://127.0.0.1:${PORT}/YOUR_API_KEY/generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent`,
   );
   if (!EXPECTED_API_KEY) {
     console.warn(
-      "\n⚠️ WARNING: EXPECTED_API_KEY is not set in your .env file!"
+      "\n⚠️ WARNING: EXPECTED_API_KEY is not set in your .env file!",
     );
     console.warn("   The server will not be secured. Please set it.");
   } else {
