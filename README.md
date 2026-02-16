@@ -1,55 +1,57 @@
-# 🧭 API Proxy Server (SOCKS5 Optional)
+# 🧭 API Proxy Server (SOCKS5 Optional) + Cloudflare Tunnel + MikroTik Guide
 
-A production-ready **Node.js reverse proxy server** that routes API
-traffic:
+Production-ready **Node.js reverse proxy** built for:
 
-- 🌍 Directly via server IP (default)
-- 🧦 Or through optional SOCKS5 proxy
-- 🔐 Protected by path-based API key
-- 🐳 Docker-ready
-- 🚀 Published to Docker Hub & GHCR
-- 📡 Deployable on MikroTik RouterOS v7 Containers
+- 🌍 Direct overseas VPS usage (no proxy required)
+- 🧦 Optional SOCKS5 routing
+- 🔐 Path-based API key protection
+- 🐳 Docker (Docker Hub + GHCR)
+- ☁️ Cloudflare Tunnel integration
+- 🧱 MikroTik RouterOS v7 Containers
+
+This guide is fully **copy‑paste ready** and battle-tested.
 
 ---
 
 # 📦 Docker Images
 
-## Docker Hub
+### Docker Hub
 
 ```bash
-docker pull whoisgray/api-proxy-server
+docker pull whoisgray/api-proxy-server:latest
 ```
 
-## GitHub Container Registry
+### GitHub Container Registry
 
 ```bash
-docker pull ghcr.io/whoisgray/api-proxy-server
+docker pull ghcr.io/whoisgray/api-proxy-server:latest
 ```
 
 ---
 
-# 🚀 Quick Docker Run
+# 🚀 Quick Start (Normal Docker)
 
-## Direct Mode (No Proxy)
-
-```bash
-docker run -d   --name api-proxy-server   --restart unless-stopped   -p 42000:42000   -e PORT=42000   -e EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY   whoisgray/api-proxy-server
-```
-
-## With SOCKS5 Proxy (Optional)
+## Direct Mode (Recommended)
 
 ```bash
-docker run -d   --name api-proxy-server   --restart unless-stopped   -p 42000:42000   -e PORT=42000   -e EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY   -e SOCKS_PROXY=socks5://user:pass@host:port   whoisgray/api-proxy-server
+docker run -d   --name api-proxy-server   --restart unless-stopped   -p 42000:42000   -e PORT=42000   -e EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY   whoisgray/api-proxy-server:latest
 ```
 
-If `SOCKS_PROXY` is not set, traffic goes directly through the server's
-public IP.
+## SOCKS5 Mode (Optional)
+
+```bash
+docker run -d   --name api-proxy-server   --restart unless-stopped   -p 42000:42000   -e PORT=42000   -e EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY   -e SOCKS_PROXY=socks5://user:pass@host:port   whoisgray/api-proxy-server:latest
+```
+
+If `SOCKS_PROXY` is not set → traffic goes directly through server IP.
 
 ---
 
-# 📋 Request Format
+# 📋 Usage Format
 
-    http://SERVER_IP:42000/YOUR_API_KEY/TARGET_DOMAIN/API_PATH
+```
+http://SERVER_IP:42000/YOUR_API_KEY/TARGET_DOMAIN/API_PATH
+```
 
 Example:
 
@@ -59,13 +61,13 @@ curl http://127.0.0.1:42000/YOUR_API_KEY/httpbin.org/get
 
 ---
 
-# 🔥 MikroTik RouterOS v7 Deployment Guide
+# 🔥 MikroTik RouterOS v7 – FULL SETUP
 
-This runs directly inside MikroTik using built-in Container support.
+> Recommended to use external storage (USB/SSD). Replace `disk1` if needed.
 
 ---
 
-## 1️⃣ Check Router Architecture
+## 1️⃣ Check Architecture
 
 ```routeros
 /system/resource/print
@@ -73,61 +75,68 @@ This runs directly inside MikroTik using built-in Container support.
 
 Look for:
 
-    architecture-name: arm64   (or x86_64)
+```
+architecture-name: arm64  (or x86_64)
+```
 
 ---
 
-## 2️⃣ Configure Container Registry
+## 2️⃣ Configure Container System
 
 ```routeros
 /container/config/set registry-url=https://registry-1.docker.io tmpdir=disk1/tmp
 ```
 
-Explanation: - registry-url → Docker Hub - tmpdir → storage location for
-image extraction
-
 ---
 
-## 3️⃣ Create Virtual Ethernet (veth)
+## 3️⃣ Create Container Network
+
+### Create bridge
+
+```routeros
+/interface/bridge/add name=br-cont
+```
+
+### Create veth for API Proxy
 
 ```routeros
 /interface/veth/add name=veth-api address=172.18.0.2/24 gateway=172.18.0.1
 ```
 
-This gives the container its own internal IP.
-
----
-
-## 4️⃣ Create Bridge for Containers
+### Create veth for Cloudflare Tunnel
 
 ```routeros
-/interface/bridge/add name=br-cont
+/interface/veth/add name=veth-cf address=172.18.0.3/24 gateway=172.18.0.1
+```
+
+### Attach to bridge
+
+```routeros
 /interface/bridge/port/add bridge=br-cont interface=veth-api
+/interface/bridge/port/add bridge=br-cont interface=veth-cf
 /ip/address/add address=172.18.0.1/24 interface=br-cont
 ```
 
-Creates internal container network.
-
 ---
 
-## 5️⃣ Enable Internet Access (NAT)
+## 4️⃣ Allow Internet Access (NAT)
+
+Replace `WAN` with your internet interface:
 
 ```routeros
 /ip/firewall/nat/add chain=srcnat src-address=172.18.0.0/24 out-interface=WAN action=masquerade
 ```
 
-Replace `WAN` with your internet interface.
-
 ---
 
-## 6️⃣ Define Environment Variables
+## 5️⃣ Environment Variables for API Proxy
 
 ```routeros
 /container/envs/add name=ENV_API_PROXY key=PORT value=42000
 /container/envs/add name=ENV_API_PROXY key=EXPECTED_API_KEY value=YOUR_SUPER_SECRET_KEY
 ```
 
-Optional SOCKS proxy:
+Optional SOCKS:
 
 ```routeros
 /container/envs/add name=ENV_API_PROXY key=SOCKS_PROXY value=socks5://user:pass@host:port
@@ -135,59 +144,99 @@ Optional SOCKS proxy:
 
 ---
 
-## 7️⃣ Pull & Create Container
+## 6️⃣ Create API Proxy Container
 
 ```routeros
 /container/add   name=api-proxy   remote-image=whoisgray/api-proxy-server:latest   interface=veth-api   root-dir=disk1/images/api-proxy   envlist=ENV_API_PROXY   start-on-boot=yes   logging=yes
 ```
 
----
-
-## 8️⃣ Start Container (Important)
+Start it manually (important):
 
 ```routeros
 /container/start api-proxy
 ```
 
-If it doesn't auto-start, run this manually.
+---
+
+# ☁️ Cloudflare Tunnel Setup (Second Container)
+
+## 1️⃣ Create Tunnel in Cloudflare
+
+Go to:
+Zero Trust → Networks → Tunnels → Create Tunnel
+
+Copy your **Tunnel Token**.
 
 ---
 
-## 9️⃣ Port Forward (Optional)
+## 2️⃣ Create Cloudflare Container (IMPORTANT FIX INCLUDED)
+
+⚠️ MikroTik does NOT expand environment variables inside `cmd`.
+
+So DO NOT use `$TUNNEL_TOKEN`.
+
+Use the token directly like this:
 
 ```routeros
-/ip/firewall/nat/add chain=dstnat protocol=tcp dst-port=42000 action=dst-nat to-addresses=172.18.0.2 to-ports=42000
+/container/add   name=cloudflared   remote-image=cloudflare/cloudflared:latest   interface=veth-cf   root-dir=disk1/images/cloudflared   cmd="tunnel --no-autoupdate run --token YOUR_REAL_TOKEN_HERE"   start-on-boot=yes   logging=yes
+```
+
+Start it:
+
+```routeros
+/container/start cloudflared
 ```
 
 ---
 
-# 🏗 Architecture Flow
+## 3️⃣ Configure Public Hostname
 
-1.  Client sends request with secret key in path.
-2.  Server validates `EXPECTED_API_KEY`.
-3.  Target domain extracted dynamically.
-4.  If `SOCKS_PROXY` exists → traffic routed via proxy.
-5.  If not → direct HTTPS via server IP.
-6.  Response streamed back to client.
+In Cloudflare Tunnel settings:
+
+- Hostname: `proxy.yourdomain.com`
+- Service Type: HTTP
+- URL:
+
+```
+http://172.18.0.2:42000
+```
 
 ---
 
-# 🔐 Security Recommendations
+# ✅ Final Test
 
-- Use strong random keys
-- Restrict WAN access if not needed
-- Put behind HTTPS reverse proxy in production
-- Monitor logs
+From anywhere on internet:
+
+```bash
+curl "https://proxy.yourdomain.com/YOUR_API_KEY/httpbin.org/get"
+```
+
+If JSON returns → everything is working.
+
+---
+
+# 🔐 Security Tips
+
+- Use strong random API keys
+- Prefer Cloudflare Tunnel over exposing port 42000
+- Restrict MikroTik management ports
+- Avoid logging secrets in production
+
+---
+
+# 🏆 What We Built
+
+✔ Dockerized reverse proxy  
+✔ Optional SOCKS5 routing  
+✔ Multi-arch ready  
+✔ Runs on MikroTik  
+✔ Secured behind Cloudflare Tunnel  
+✔ Public domain without opening ports
+
+Absolute production-grade setup.
 
 ---
 
 # 📄 License
 
-MIT License
-
----
-
-# ⚠ Disclaimer
-
-Use responsibly and in accordance with local regulations and service
-provider terms.
+MIT
