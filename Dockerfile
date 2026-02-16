@@ -1,44 +1,77 @@
-# Stage 1: Build dependencies
-# We use node:18-alpine for a lightweight base image for both stages.
-FROM node:18-alpine AS builder
+# syntax=docker/dockerfile:1.6
+################################################################################
+# API Proxy Server - Production Dockerfile (Multi-stage, Small, Secure)
+#
+# ✅ Small image (alpine) + multi-stage
+# ✅ Uses Corepack (no global pnpm install needed)
+# ✅ Production-only deps
+# ✅ BuildKit cache for fast CI builds
+# ✅ Runs as non-root user
+################################################################################
 
-# Set the working directory inside the container
+############################
+# Stage 1: deps (install only prod deps)
+############################
+
+ARG NODE_VERSION=22
+
+FROM node:${NODE_VERSION}-alpine AS deps
+
+# Set production by default (affects some packages + reduces noise)
+ENV NODE_ENV=production
+
+# Create app directory
 WORKDIR /app
 
-# Copy pnpm lock file and package.json to leverage Docker's build cache.
-# This step is critical: if only source code changes, this layer (and subsequent pnpm install)
-# can be reused, making builds much faster.
+# Enable pnpm via corepack (built into Node 16+)
+# This avoids "npm i -g pnpm" and keeps images cleaner.
+RUN corepack enable
+
+# Copy only dependency manifests first to maximize layer caching
 COPY package.json pnpm-lock.yaml ./
 
-# Install pnpm globally within this stage
-RUN npm install -g pnpm
+# Install production dependencies only.
+# Using BuildKit cache makes installs much faster in CI.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm config set store-dir /pnpm/store && \
+    pnpm install --prod --frozen-lockfile
 
-# Install production dependencies using pnpm.
-# 'pnpm fetch --prod' fetches packages into pnpm's content-addressable store.
-# 'pnpm install --prod --offline' links these fetched packages into node_modules,
-# ensuring dependencies are installed efficiently and without re-downloading.
-RUN pnpm fetch --prod && \
-    pnpm install --prod --offline
+############################
+# Stage 2: runner (final runtime image)
+############################
+FROM node:${NODE_VERSION}-alpine AS runner
 
-# Stage 2: Create the final production image
-# Use the same lightweight base image for consistency and minimal size.
-FROM node:18-alpine AS runner
+# tini (optional but recommended) handles PID 1 properly (signals, zombie reaping)
+# Keeps container behavior clean in production.
+RUN apk add --no-cache tini
 
-# Set the working directory for the application in the final image
+ENV NODE_ENV=production
 WORKDIR /app
 
-# Copy only the node_modules directory from the 'builder' stage.
-# This ensures that only necessary runtime dependencies are included,
-# significantly reducing the final image size by excluding build tools and dev dependencies.
-COPY --from=builder /app/node_modules ./node_modules/
+# Copy only production node_modules from deps stage
+COPY --from=deps /app/node_modules ./node_modules
 
-# Copy the rest of the application source code into the container.
-COPY . .
+# Copy only the runtime source files you actually need.
+# (Avoid copying dev files / docs / workflow files into the final image.)
+# If your repo only has server.js and a few files, keep it minimal like below:
+COPY server.js package.json ./
 
-# Expose the port the application will listen on.
+# If you have additional runtime files (e.g. config, src, etc.), add them explicitly:
+# COPY src ./src
+
+# Security: run as the built-in non-root "node" user
+USER node
+
+# Default port (you can override with -e PORT=xxxx)
 EXPOSE 42000
 
-# Command to run the application when the container starts.
-# Running 'node server.js' directly is often more efficient than 'npm start'
-# as it bypasses the npm script runner overhead.
+# Optional healthcheck (very useful for orchestration)
+# Note: relies on your server responding on "/" with 200.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "require('http').get({host:'127.0.0.1',port:process.env.PORT||42000,path:'/'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+
+# Use tini as entrypoint (PID 1)
+ENTRYPOINT ["tini", "--"]
+
+# Start the server
 CMD ["node", "server.js"]
