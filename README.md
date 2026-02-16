@@ -1,40 +1,18 @@
 # 🧭 API Proxy Server (SOCKS5 Optional)
 
-A lightweight, production-ready **Node.js reverse proxy server**
-designed to route API requests directly or through an optional **SOCKS5
-proxy**.
+A production-ready **Node.js reverse proxy server** that routes API
+traffic:
 
-Ideal for deploying on **international servers** to access services such
-as:
-
-- OpenAI API
-- Google AI (Gemini)
-- GitHub API
-- Any public HTTPS API
-
-Now supports: - ✅ Optional SOCKS5 proxy (auto-detect if provided) - 🔐
-Path-based API key authentication - 🐳 Docker & CI/CD ready (Docker
-Hub + GHCR) - 🌍 Perfect for overseas VPS deployments
-
----
-
-# 🚀 Features
-
-- 🔐 **Path-based API Key Authentication**
-- 🧦 **Optional SOCKS5 Proxy Support**
-- 🌐 **Direct Server IP fallback (no proxy required)**
-- 🔄 **Dynamic Domain Routing**
-- 🐳 **Docker Ready**
-- 📦 **Published on Docker Hub & GHCR**
-- 📜 Request logging
-- ❗ Robust error handling
-- 🌍 CORS enabled
+- 🌍 Directly via server IP (default)
+- 🧦 Or through optional SOCKS5 proxy
+- 🔐 Protected by path-based API key
+- 🐳 Docker-ready
+- 🚀 Published to Docker Hub & GHCR
+- 📡 Deployable on MikroTik RouterOS v7 Containers
 
 ---
 
 # 📦 Docker Images
-
-You can pull directly from:
 
 ## Docker Hub
 
@@ -50,28 +28,26 @@ docker pull ghcr.io/whoisgray/api-proxy-server
 
 ---
 
-# ⚡ Quick Start
+# 🚀 Quick Docker Run
 
-## Run with Docker
-
-```bash
-docker run -d   --name api-proxy-server   -p 42000:42000   -e PORT=42000   -e EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY   whoisgray/api-proxy-server
-```
-
-## With Optional SOCKS5 Proxy
+## Direct Mode (No Proxy)
 
 ```bash
-docker run -d   --name api-proxy-server   -p 42000:42000   -e PORT=42000   -e EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY   -e SOCKS_PROXY=socks5://user:pass@host:port   whoisgray/api-proxy-server
+docker run -d   --name api-proxy-server   --restart unless-stopped   -p 42000:42000   -e PORT=42000   -e EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY   whoisgray/api-proxy-server
 ```
 
-If `SOCKS_PROXY` is not provided, the server connects directly using the
-VPS public IP.
+## With SOCKS5 Proxy (Optional)
+
+```bash
+docker run -d   --name api-proxy-server   --restart unless-stopped   -p 42000:42000   -e PORT=42000   -e EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY   -e SOCKS_PROXY=socks5://user:pass@host:port   whoisgray/api-proxy-server
+```
+
+If `SOCKS_PROXY` is not set, traffic goes directly through the server's
+public IP.
 
 ---
 
-# 📋 Usage
-
-## Request Format
+# 📋 Request Format
 
     http://SERVER_IP:42000/YOUR_API_KEY/TARGET_DOMAIN/API_PATH
 
@@ -83,94 +59,125 @@ curl http://127.0.0.1:42000/YOUR_API_KEY/httpbin.org/get
 
 ---
 
-# 🔍 Examples
+# 🔥 MikroTik RouterOS v7 Deployment Guide
 
-## OpenAI
+This runs directly inside MikroTik using built-in Container support.
 
-```bash
-curl -X POST http://127.0.0.1:42000/YOUR_API_KEY/api.openai.com/v1/chat/completions   -H "Authorization: Bearer YOUR_OPENAI_KEY"   -H "Content-Type: application/json"   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello!"}]}'
+---
+
+## 1️⃣ Check Router Architecture
+
+```routeros
+/system/resource/print
 ```
 
-## Google Gemini
+Look for:
 
-```bash
-curl -X POST http://127.0.0.1:42000/YOUR_API_KEY/generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=YOUR_GOOGLE_KEY -H "Content-Type: application/json" -d '{"contents":[{"parts":[{"text":"Hello!"}]}]}'
+    architecture-name: arm64   (or x86_64)
+
+---
+
+## 2️⃣ Configure Container Registry
+
+```routeros
+/container/config/set registry-url=https://registry-1.docker.io tmpdir=disk1/tmp
+```
+
+Explanation: - registry-url → Docker Hub - tmpdir → storage location for
+image extraction
+
+---
+
+## 3️⃣ Create Virtual Ethernet (veth)
+
+```routeros
+/interface/veth/add name=veth-api address=172.18.0.2/24 gateway=172.18.0.1
+```
+
+This gives the container its own internal IP.
+
+---
+
+## 4️⃣ Create Bridge for Containers
+
+```routeros
+/interface/bridge/add name=br-cont
+/interface/bridge/port/add bridge=br-cont interface=veth-api
+/ip/address/add address=172.18.0.1/24 interface=br-cont
+```
+
+Creates internal container network.
+
+---
+
+## 5️⃣ Enable Internet Access (NAT)
+
+```routeros
+/ip/firewall/nat/add chain=srcnat src-address=172.18.0.0/24 out-interface=WAN action=masquerade
+```
+
+Replace `WAN` with your internet interface.
+
+---
+
+## 6️⃣ Define Environment Variables
+
+```routeros
+/container/envs/add name=ENV_API_PROXY key=PORT value=42000
+/container/envs/add name=ENV_API_PROXY key=EXPECTED_API_KEY value=YOUR_SUPER_SECRET_KEY
+```
+
+Optional SOCKS proxy:
+
+```routeros
+/container/envs/add name=ENV_API_PROXY key=SOCKS_PROXY value=socks5://user:pass@host:port
 ```
 
 ---
 
-# ⚙️ Environment Variables
+## 7️⃣ Pull & Create Container
 
-Variable Required Description
-
----
-
-PORT No Default: 42000
-EXPECTED_API_KEY Yes Secret key required in path
-SOCKS_PROXY No SOCKS5 proxy URL
-NODE_ENV No production / development
+```routeros
+/container/add   name=api-proxy   remote-image=whoisgray/api-proxy-server:latest   interface=veth-api   root-dir=disk1/images/api-proxy   envlist=ENV_API_PROXY   start-on-boot=yes   logging=yes
+```
 
 ---
 
-# 🏗 Architecture
+## 8️⃣ Start Container (Important)
 
-1.  Client sends request including API key in path.
+```routeros
+/container/start api-proxy
+```
+
+If it doesn't auto-start, run this manually.
+
+---
+
+## 9️⃣ Port Forward (Optional)
+
+```routeros
+/ip/firewall/nat/add chain=dstnat protocol=tcp dst-port=42000 action=dst-nat to-addresses=172.18.0.2 to-ports=42000
+```
+
+---
+
+# 🏗 Architecture Flow
+
+1.  Client sends request with secret key in path.
 2.  Server validates `EXPECTED_API_KEY`.
 3.  Target domain extracted dynamically.
-4.  If `SOCKS_PROXY` exists → traffic routed through proxy.
-5.  If not → direct HTTPS request via server IP.
+4.  If `SOCKS_PROXY` exists → traffic routed via proxy.
+5.  If not → direct HTTPS via server IP.
 6.  Response streamed back to client.
 
 ---
 
-# 🔐 Security Notes
+# 🔐 Security Recommendations
 
-- Path-based key provides lightweight protection.
-- Use strong random keys.
-- Restrict firewall access if exposing publicly.
-- Use HTTPS (via Nginx/Traefik) in production.
-- Avoid logging sensitive production keys.
-
----
-
-# 🐳 Docker Compose Example
-
-```yaml
-version: "3.8"
-
-services:
-  api-proxy:
-    image: whoisgray/api-proxy-server
-    container_name: api-proxy-server
-    restart: unless-stopped
-    ports:
-      - "42000:42000"
-    environment:
-      PORT: 42000
-      EXPECTED_API_KEY: YOUR_SUPER_SECRET_KEY
-      # Optional:
-      # SOCKS_PROXY: socks5://host:port
-```
-
----
-
-# 🔄 CI/CD
-
-Automatically builds and pushes Docker images to:
-
-- Docker Hub
-- GitHub Container Registry
-
-Triggered on: - Push to `main` - Version tags (v\*)
-
----
-
-# 🛠 Development
-
-```bash
-npm install
-npm run dev
-```
+- Use strong random keys
+- Restrict WAN access if not needed
+- Put behind HTTPS reverse proxy in production
+- Monitor logs
 
 ---
 
@@ -182,5 +189,5 @@ MIT License
 
 # ⚠ Disclaimer
 
-Use responsibly and in compliance with service provider terms and local
-regulations.
+Use responsibly and in accordance with local regulations and service
+provider terms.
