@@ -187,6 +187,12 @@ Start it:
 /container/start cloudflared
 ```
 
+## Port Forward (Optional)
+
+```routeros
+/ip/firewall/nat/add chain=dstnat protocol=tcp dst-port=42000 action=dst-nat to-addresses=172.18.0.2 to-ports=42000
+```
+
 ---
 
 ## 3️⃣ Configure Public Hostname
