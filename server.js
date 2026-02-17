@@ -1,125 +1,212 @@
+"use strict";
+
 const express = require("express");
+const http = require("http");
+const https = require("https");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const { SocksProxyAgent } = require("socks-proxy-agent");
-const dotenv = require("dotenv");
-
-// Load environment variables from .env file
-dotenv.config();
+require("dotenv").config();
 
 const app = express();
-const PORT = process.env.PORT || 42000;
+app.disable("x-powered-by");
 
-// SOCKS5 proxy configuration
-const socksProxy = process.env.SOCKS_PROXY || "";
-const agent = socksProxy ? new SocksProxyAgent(socksProxy) : null;
+const PORT = Number(process.env.PORT || 42000);
 
-// --- IMPORTANT: Set your secret API key in your .env file ---
-// For example: EXPECTED_API_KEY=YOUR_SUPER_SECRET_KEY_HERE
-const EXPECTED_API_KEY = process.env.EXPECTED_API_KEY;
+// Optional SOCKS5 proxy (if set => route traffic via SOCKS)
+const SOCKS_PROXY = (process.env.SOCKS_PROXY || "").trim();
 
-// Middleware to log requests
+// Multi-key support (comma-separated)
+const EXPECTED_API_KEYS = new Set(
+  (process.env.EXPECTED_API_KEY || "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean),
+);
+
+// Optional allowlist: "api.openai.com,generativelanguage.googleapis.com,api.github.com"
+const ALLOWLIST = (process.env.ALLOWLIST || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+// Logging level: error|warn|info|debug
+const LOG_LEVEL = (process.env.LOG_LEVEL || "info").toLowerCase();
+const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 30_000);
+const MAX_PROXY_CACHE = Number(process.env.MAX_PROXY_CACHE || 200);
+
+// ---- Simple logger
+function log(level, msg, meta) {
+  const order = { error: 0, warn: 1, info: 2, debug: 3 };
+  if ((order[level] ?? 99) > (order[LOG_LEVEL] ?? 2)) return;
+  const line = meta ? `${msg} ${JSON.stringify(meta)}` : msg;
+  // eslint-disable-next-line no-console
+  console[level === "debug" ? "log" : level](
+    `${new Date().toISOString()} [${level}] ${line}`,
+  );
+}
+
+// Mask API key in URLs for safe logs
+function maskKey(key) {
+  if (!key) return "";
+  if (key.length <= 6) return "***";
+  return `${key.slice(0, 3)}***${key.slice(-3)}`;
+}
+function safeUrlForLog(req) {
+  // replace first path segment (api key) with masked version
+  const parts = (req.originalUrl || req.url || "").split("/");
+  // parts[0] is "" because url starts with /
+  if (parts.length >= 2 && parts[1]) parts[1] = maskKey(parts[1]);
+  return parts.join("/");
+}
+
+// ---- Keep-Alive agents (performance)
+const directHttpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: Number(process.env.MAX_SOCKETS || 256),
+  maxFreeSockets: Number(process.env.MAX_FREE_SOCKETS || 64),
+  timeout: UPSTREAM_TIMEOUT_MS,
+});
+
+const socksAgent = SOCKS_PROXY ? new SocksProxyAgent(SOCKS_PROXY) : null;
+const outboundAgent = socksAgent || directHttpsAgent;
+
+// ---- CORS (simple)
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+  );
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    req.headers["access-control-request-headers"] || "*",
+  );
+  if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
-// CORS middleware
+// ---- Request logging (safe)
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.header("Access-Control-Allow-Headers", "*");
+  log("info", "REQ", { method: req.method, url: safeUrlForLog(req) });
+  next();
+});
 
-  // Handle preflight requests
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
+// ---- Health (no key)
+app.get(["/", "/health"], (req, res) => {
+  res.json({
+    status: "ok",
+    port: PORT,
+    socksProxyEnabled: Boolean(SOCKS_PROXY),
+    allowlistEnabled: ALLOWLIST.length > 0,
+    keysLoaded: EXPECTED_API_KEYS.size,
+    usage: `http://127.0.0.1:${PORT}/YOUR_API_KEY/api.openai.com/v1/chat/completions`,
+  });
+});
+
+// ---- Proxy cache per target domain (big perf win)
+const proxyCache = new Map();
+
+function getProxyForTarget(targetDomain, apiKeyParam) {
+  const cacheKey = targetDomain;
+
+  const cached = proxyCache.get(cacheKey);
+  if (cached) return cached;
+
+  if (proxyCache.size >= MAX_PROXY_CACHE) {
+    const firstKey = proxyCache.keys().next().value;
+    proxyCache.delete(firstKey);
   }
 
-  next();
-});
-
-/**
- * Creates a proxy middleware for a given target domain.
- * @param {string} target The target domain (e.g., "api.openai.com").
- * @param {string} apiPathSegment The API key segment to remove from the path.
- * @returns {Function} The proxy middleware.
- */
-const createProxy = (target, apiPathSegment) => {
-  return createProxyMiddleware({
-    target: `https://${target}`,
+  const mw = createProxyMiddleware({
+    target: `https://${targetDomain}`,
     changeOrigin: true,
     secure: true,
     followRedirects: true,
-    logLevel: "warn", // Reduce logging noise for production
+    agent: outboundAgent,
 
-    // Use SOCKS5 proxy
-    agent: agent ? agent : undefined,
-
-    // Remove both the API key and target domain from the beginning of the path
-    pathRewrite: (path, req) => {
-      // The original path will be like /<apiKey>/<targetDomain>/<actualPath>
-      // We need to remove /<apiKey>/<targetDomain>
-      const newPath = path.replace(`/${apiPathSegment}/${target}`, "");
-      console.log(`Rewriting path from "${path}" to "${newPath}"`);
-      return newPath;
+    // Remove /<apiKey>/<targetDomain> prefix only (anchored)
+    pathRewrite: (path) => {
+      const prefix = `/${apiKeyParam}/${targetDomain}`;
+      const newPath = path.startsWith(prefix)
+        ? path.slice(prefix.length)
+        : path;
+      return newPath.length ? newPath : "/";
     },
 
-    // Handle headers
-    onProxyReq: (proxyReq, req, res) => {
-      try {
-        // Ignore if favicon.ico request
-        if (req.url.includes("favicon.ico")) {
-          return;
-        }
+    onProxyReq: (proxyReq, req) => {
+      // Prevent real client IP leak to upstream
+      proxyReq.removeHeader("x-forwarded-for");
+      proxyReq.removeHeader("x-real-ip");
+      proxyReq.removeHeader("forwarded");
+      proxyReq.removeHeader("cf-connecting-ip");
+      proxyReq.removeHeader("true-client-ip");
+      proxyReq.removeHeader("x-client-ip");
 
-        // Only set headers if they haven't been sent yet
-        if (!proxyReq.headersSent) {
-          // Set User-Agent if not already present
-          if (!proxyReq.getHeader("User-Agent")) {
-            proxyReq.setHeader(
-              "User-Agent",
-              req.headers["user-agent"] || "Mozilla/5.0",
-            );
-          }
-        }
+      // Optional: do not forward cookies for a generic proxy
+      proxyReq.removeHeader("cookie");
 
-        // Log the actual request being made
-        // req.url here will still contain the API key and target domain initially
-        const fullProxyTarget = `https://${target}${proxyReq.path}`;
-        console.log(`Proxying request to: ${fullProxyTarget}`);
-      } catch (error) {
-        console.error("Error in onProxyReq:", error.message);
+      // Ensure User-Agent exists
+      if (!proxyReq.getHeader("user-agent")) {
+        proxyReq.setHeader(
+          "user-agent",
+          req.headers["user-agent"] || "Mozilla/5.0",
+        );
       }
     },
 
-    // Handle response
-    onProxyRes: (proxyRes, req, res) => {
-      console.log(
-        `✅ Response: ${proxyRes.statusCode} from ${
-          req.url.split("/")[2] // Index 2 because path is now /apiKey/targetDomain/path
-        }`,
-      );
-    },
-
-    // Handle errors
-    onError: (err, req, res) => {
-      console.error("Proxy error:", err.message);
-      res.status(500).json({
-        error: "Proxy error",
-        message: err.message,
+    onProxyRes: (proxyRes, req) => {
+      log("info", "UPSTREAM", {
+        status: proxyRes.statusCode,
+        target: targetDomain,
       });
     },
+
+    onError: (err, req, res) => {
+      log("error", "PROXY_ERROR", {
+        target: targetDomain,
+        message: err.message,
+      });
+      if (!res.headersSent)
+        res.status(502).json({ error: "Proxy error", message: err.message });
+    },
   });
-};
 
-// Dynamic proxy route with API key validation
+  proxyCache.set(cacheKey, mw);
+  return mw;
+}
+
+function isValidTarget(targetDomain) {
+  if (!targetDomain || typeof targetDomain !== "string") return false;
+  const lower = targetDomain.toLowerCase();
+
+  // Block dangerous/obvious internal targets
+  const blocked = new Set([
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "metadata.google.internal",
+  ]);
+  if (blocked.has(lower)) return false;
+
+  // Block IP literals (simple SSRF mitigation)
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(lower)) return false;
+  if (lower.includes(":")) return false; // block IPv6 literals
+
+  // Looks like a domain
+  if (!lower.includes(".")) return false;
+  if (!/^[a-z0-9.-]+$/.test(lower)) return false;
+  return true;
+}
+
+// ---- Main route: /<apiKey>/<domain>/<path>
 app.use("/:apiKeyParam/:target(*)", (req, res, next) => {
-  const apiKeyParam = req.params.apiKeyParam; // The API key from the URL
-  const fullPath = req.params.target; // The rest of the path, e.g., api.openai.com/v1/...
-  const targetDomain = fullPath.split("/")[0]; // Extract target domain from the rest of the path
+  const apiKeyParam = (req.params.apiKeyParam || "").trim();
+  const fullPath = req.params.target || "";
+  const targetDomain = fullPath.split("/")[0];
 
-  // --- API Key Validation ---
-  if (!EXPECTED_API_KEY || apiKeyParam !== EXPECTED_API_KEY) {
-    console.warn(`Unauthorized access attempt with key: ${apiKeyParam}`);
+  // Auth (multi-key)
+  if (EXPECTED_API_KEYS.size === 0 || !EXPECTED_API_KEYS.has(apiKeyParam)) {
+    log("warn", "UNAUTHORIZED", { url: safeUrlForLog(req) });
     return res.status(401).json({
       error: "Unauthorized",
       message: "Invalid or missing API key in the path.",
@@ -127,63 +214,56 @@ app.use("/:apiKeyParam/:target(*)", (req, res, next) => {
     });
   }
 
-  // Validate target domain
-  if (!targetDomain || !targetDomain.includes(".")) {
+  // Validate target
+  if (!isValidTarget(targetDomain)) {
     return res.status(400).json({
       error: "Invalid target domain",
       usage: "Use format: /YOUR_API_KEY/domain.com/path",
     });
   }
 
-  // Create proxy for this specific target and API key
-  const proxy = createProxy(targetDomain, apiKeyParam);
-  proxy(req, res, next);
+  // Allowlist (optional)
+  if (ALLOWLIST.length > 0 && !ALLOWLIST.includes(targetDomain)) {
+    return res.status(403).json({
+      error: "Target not allowed",
+      targetDomain,
+      allowlist: ALLOWLIST,
+    });
+  }
+
+  // Proxy (cached)
+  const proxy = getProxyForTarget(targetDomain, apiKeyParam);
+  return proxy(req, res, next);
 });
 
-// Health check endpoint (accessible without API key)
-app.get("/", (req, res) => {
-  res.json({
-    status: "Reverse Proxy Server Running",
-    port: PORT,
-    usage: [
-      "Secured API Usage:",
-      `http://127.0.0.1:${PORT}/YOUR_API_KEY/api.openai.com/v1/chat/completions`,
-      `http://127.0.0.1:${PORT}/YOUR_API_KEY/generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent`,
-    ],
-    proxy: socksProxy,
-    // Warning: Do not expose your actual EXPECTED_API_KEY in production health checks
-    apiKeyHint: "Remember to replace 'YOUR_API_KEY' with your actual key.",
+// ---- Start server with sane timeouts
+const server = http.createServer(app);
+server.keepAliveTimeout = Number(process.env.KEEP_ALIVE_TIMEOUT_MS || 65_000);
+server.headersTimeout = Number(process.env.HEADERS_TIMEOUT_MS || 70_000);
+server.setTimeout(Number(process.env.SERVER_SOCKET_TIMEOUT_MS || 120_000));
+
+server.listen(PORT, "0.0.0.0", () => {
+  log("info", `🚀 API Proxy Server running on :${PORT}`, {
+    socksProxyEnabled: Boolean(SOCKS_PROXY),
+    allowlist: ALLOWLIST,
+    keysLoaded: EXPECTED_API_KEYS.size,
   });
-});
 
-// Start server
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Reverse Proxy Server running on http://127.0.0.1:${PORT}`);
-  console.log(`📡 Using SOCKS5 proxy: ${socksProxy}`);
-  console.log("\n📋 Usage Examples (remember to replace YOUR_API_KEY):");
-  console.log(
-    `   OpenAI: http://127.0.0.1:${PORT}/YOUR_API_KEY/api.openai.com/v1/chat/completions`,
-  );
-  console.log(
-    `   Google: http://127.0.0.1:${PORT}/YOUR_API_KEY/generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent`,
-  );
-  if (!EXPECTED_API_KEY) {
-    console.warn(
-      "\n⚠️ WARNING: EXPECTED_API_KEY is not set in your .env file!",
-    );
-    console.warn("   The server will not be secured. Please set it.");
+  if (EXPECTED_API_KEYS.size === 0) {
+    log("warn", "⚠️ EXPECTED_API_KEY is empty! Proxy is NOT secured.");
   } else {
-    console.log("\n✅ Proxy server is ready and secured with API key!");
+    log(
+      "info",
+      "✅ Multi-key auth enabled (comma-separated EXPECTED_API_KEY).",
+    );
   }
 });
 
 // Graceful shutdown
-process.on("SIGTERM", () => {
-  console.log("🛑 Shutting down proxy server...");
-  process.exit(0);
-});
-
-process.on("SIGINT", () => {
-  console.log("🛑 Shutting down proxy server...");
-  process.exit(0);
-});
+function shutdown(signal) {
+  log("info", `Shutting down (${signal})...`);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 5_000).unref();
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
